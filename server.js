@@ -510,3 +510,17 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 CMRIT Backend running on port ${PORT}`);
   console.log('✅ CORS for https://cmr-it-ihpn.onrender.com');
 });
+// List all active students and teachers
+app.get('/api/admin/list-users', async (req, res) => {
+  try {
+    const students = await User.find({ role: 'student' }).select(
+      'email name rollNo mentorTeacherEmail'
+    );
+    const teachers = await User.find({ role: 'teacher' }).select(
+      'email name dept'
+    );
+    res.json({ students, teachers });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to load users' });
+  }
+});
