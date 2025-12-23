@@ -188,7 +188,7 @@ app.post('/api/admin/login', loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (email === 'admin@cmrit.ac.in' && password === 'admin123') {
+    if (email === 'ramgoud696@gmail.com' && password === 'ram@6969') {
       return res.json({ email, name: 'Admin', role: 'admin' });
     }
     return res.status(401).json({ message: 'Admin login failed' });
@@ -459,6 +459,21 @@ app.post('/api/admin/upload-teachers', upload.single('file'), async (req, res) =
     res.status(500).json({ message: err.message });
   }
 });
+// Get all students and teachers
+app.get('/api/admin/list-users', async (req, res) => {
+  try {
+    const students = await User.find({ role: 'student' }).select(
+      'email name rollNo mentorTeacherEmail'
+    );
+    const teachers = await User.find({ role: 'teacher' }).select(
+      'email name dept'
+    );
+    res.json({ students, teachers });
+  } catch (err) {
+    console.error('List users error:', err);
+    res.status(500).json({ message: 'Failed to load users' });
+  }
+});
 
 // ---------- ONE-TIME TEST DATA ROUTE (OPTIONAL) ----------
 
@@ -509,18 +524,4 @@ app.use((err, req, res, next) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 CMRIT Backend running on port ${PORT}`);
   console.log('✅ CORS for https://cmr-it-ihpn.onrender.com');
-});
-// List all active students and teachers
-app.get('/api/admin/list-users', async (req, res) => {
-  try {
-    const students = await User.find({ role: 'student' }).select(
-      'email name rollNo mentorTeacherEmail'
-    );
-    const teachers = await User.find({ role: 'teacher' }).select(
-      'email name dept'
-    );
-    res.json({ students, teachers });
-  } catch (err) {
-    res.status(500).json({ message: err.message || 'Failed to load users' });
-  }
 });
