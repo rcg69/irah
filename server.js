@@ -13,24 +13,12 @@ const xlsx = require('xlsx');
 const bcrypt = require('bcryptjs');
 const path = require('path');
 const fs = require('fs');
+
 const chatbotRoutes = require('./chatbot');
+const examPaperRoutes = require("./exampaper");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-
-// ✅ ADDED: quick startup diagnostics (shows exactly what is missing)
-const requiredEnv = ['MONGODB_URI', 'GEMINI_API_KEY'];
-const missingEnv = requiredEnv.filter((k) => !process.env[k] || String(process.env[k]).trim() === '');
-
-console.log('🧩 Runtime diagnostics:', {
-  nodeEnv: process.env.NODE_ENV || '(not set)',
-  port: PORT,
-  mongoConfigured: !!process.env.MONGODB_URI,
-  geminiKeyConfigured: !!process.env.GEMINI_API_KEY,
-  missingEnv,
-  // show only safe prefix to confirm correct key is loaded (no full secret)
-  geminiKeyPrefix: process.env.GEMINI_API_KEY ? String(process.env.GEMINI_API_KEY).slice(0, 6) + '***' : null,
-});
 
 // ---------- BASIC SETUP ----------
 
@@ -46,15 +34,22 @@ app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// ✅ ADDED: log that chatbot router is being mounted (helps confirm deploy picked latest code)
-console.log('✅ Mounting chatbot routes at /api/chatbot');
-
-// chat routes
+// Mount chatbot routes
 app.use('/api/chatbot', chatbotRoutes);
+
+// Mount exam paper routes (ADDED RIGHT AFTER CHATBOT)
+console.log("Mounting exam paper routes at /api/exams");
+app.use("/api/exams", examPaperRoutes);
 
 // Create uploads folder if missing
 if (!fs.existsSync('./uploads')) {
   fs.mkdirSync('./uploads', { recursive: true });
+}
+
+// Create dedicated exam uploads folder if missing (ADDED)
+const examUploadsDir = path.join(__dirname, "exam_uploads");
+if (!fs.existsSync(examUploadsDir)) {
+  fs.mkdirSync(examUploadsDir, { recursive: true });
 }
 
 // Multer for file upload
@@ -79,8 +74,6 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     mongodbUriConfigured: !!process.env.MONGODB_URI,
-    geminiApiKeyConfigured: !!process.env.GEMINI_API_KEY, // ✅ ADDED
-    missingEnv, // ✅ ADDED
     timestamp: new Date().toISOString()
   });
 });
@@ -336,6 +329,10 @@ app.post('/api/student/profile-image', upload.single('image'), async (req, res) 
 // Serve uploaded images
 app.use('/uploads', express.static('uploads'));
 
+// Serve dedicated exam uploads folder (ADDED)
+// Using absolute path is safer than relative when serving static files. [web:1]
+app.use("/exam_uploads", express.static(path.join(__dirname, "exam_uploads")));
+
 // ---------- TEACHER DASHBOARD ROUTES ----------
 
 // Get students by mentor - POST /api/admin/students-by-mentor
@@ -527,7 +524,7 @@ app.post('/api/setup-test-data', async (req, res) => {
 
     res.json({
       message: 'Test data created',
-      studentLogin: "student@cmrit.ac.in / password123"
+      studentLogin: 'student@cmrit.ac.in / password123'
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -536,27 +533,18 @@ app.post('/api/setup-test-data', async (req, res) => {
 
 // ---------- FALLBACKS & SERVER START ----------
 
-// ✅ ADDED: 404 with more diagnostics (method + path) to see what is missing
-app.use((req, res) => {
-  res.status(404).json({
-    error: 'Route not found',
-    method: req.method,
-    path: req.originalUrl
-  });
+// 404 fallback (keep after all routes/mounts). [web:2]
+app.use('*', (req, res) => {
+  res.status(404).json({ error: 'Route not found' });
 });
 
-// ✅ ADDED: better global error shape (still 500, but includes message)
-// Express error middleware must have 4 args and be after routes. [web:123]
+// Global error handler (keep last). [web:2]
 app.use((err, req, res, next) => {
   console.error('Global error:', err);
-  res.status(500).json({
-    error: 'Something went wrong!',
-    message: err?.message
-  });
+  res.status(500).json({ error: 'Something went wrong!' });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 CMRIT Backend running on port ${PORT}`);
   console.log('✅ CORS for https://cmr-it-ihpn.onrender.com');
-  console.log('✅ Chatbot endpoint mounted at /api/chatbot/chat'); // ✅ ADDED
 });
