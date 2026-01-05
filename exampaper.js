@@ -241,5 +241,23 @@ router.get("/student/folders/:folderId", async (req, res) => {
     return res.status(500).json({ message: err?.message || "Server error" });
   }
 });
+// GET all exam folders uploaded by this teacher (mentor uploads only)
+router.get("/teacher/folders", async (req, res) => {
+  try {
+    const { mentorTeacherEmail } = req.query;
+    if (!mentorTeacherEmail) {
+      return res.status(400).json({ message: "mentorTeacherEmail is required" });
+    }
+
+    const folders = await ExamFolder.find({
+      mentorTeacherEmail: String(mentorTeacherEmail).toLowerCase().trim(),
+    }).sort({ createdAt: -1 });
+
+    return res.json({ folders });
+  } catch (err) {
+    console.error("teacher/folders error:", err);
+    return res.status(500).json({ message: err?.message || "Server error" });
+  }
+});
 
 module.exports = router;
