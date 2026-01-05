@@ -13,6 +13,8 @@ const xlsx = require('xlsx');
 const bcrypt = require('bcryptjs');
 const path = require('path');
 const fs = require('fs');
+const chatbotRoutes = require('./chatbot');
+
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -30,6 +32,8 @@ app.use(compression());
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use('/api/chatbot', chatbotRoutes);
+
 
 // Create uploads folder if missing
 if (!fs.existsSync('./uploads')) {
