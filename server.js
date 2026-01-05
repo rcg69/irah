@@ -15,9 +15,22 @@ const path = require('path');
 const fs = require('fs');
 const chatbotRoutes = require('./chatbot');
 
-
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// ✅ ADDED: quick startup diagnostics (shows exactly what is missing)
+const requiredEnv = ['MONGODB_URI', 'GEMINI_API_KEY'];
+const missingEnv = requiredEnv.filter((k) => !process.env[k] || String(process.env[k]).trim() === '');
+
+console.log('🧩 Runtime diagnostics:', {
+  nodeEnv: process.env.NODE_ENV || '(not set)',
+  port: PORT,
+  mongoConfigured: !!process.env.MONGODB_URI,
+  geminiKeyConfigured: !!process.env.GEMINI_API_KEY,
+  missingEnv,
+  // show only safe prefix to confirm correct key is loaded (no full secret)
+  geminiKeyPrefix: process.env.GEMINI_API_KEY ? String(process.env.GEMINI_API_KEY).slice(0, 6) + '***' : null,
+});
 
 // ---------- BASIC SETUP ----------
 
@@ -32,8 +45,12 @@ app.use(compression());
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
-app.use('/api/chatbot', chatbotRoutes);
 
+// ✅ ADDED: log that chatbot router is being mounted (helps confirm deploy picked latest code)
+console.log('✅ Mounting chatbot routes at /api/chatbot');
+
+// chat routes
+app.use('/api/chatbot', chatbotRoutes);
 
 // Create uploads folder if missing
 if (!fs.existsSync('./uploads')) {
@@ -62,6 +79,8 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     mongodbUriConfigured: !!process.env.MONGODB_URI,
+    geminiApiKeyConfigured: !!process.env.GEMINI_API_KEY, // ✅ ADDED
+    missingEnv, // ✅ ADDED
     timestamp: new Date().toISOString()
   });
 });
@@ -463,6 +482,7 @@ app.post('/api/admin/upload-teachers', upload.single('file'), async (req, res) =
     res.status(500).json({ message: err.message });
   }
 });
+
 // Get all students and teachers
 app.get('/api/admin/list-users', async (req, res) => {
   try {
@@ -507,7 +527,7 @@ app.post('/api/setup-test-data', async (req, res) => {
 
     res.json({
       message: 'Test data created',
-      studentLogin: 'student@cmrit.ac.in / password123'
+      studentLogin: "student@cmrit.ac.in / password123"
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -516,16 +536,27 @@ app.post('/api/setup-test-data', async (req, res) => {
 
 // ---------- FALLBACKS & SERVER START ----------
 
-app.use('*', (req, res) => {
-  res.status(404).json({ error: 'Route not found' });
+// ✅ ADDED: 404 with more diagnostics (method + path) to see what is missing
+app.use((req, res) => {
+  res.status(404).json({
+    error: 'Route not found',
+    method: req.method,
+    path: req.originalUrl
+  });
 });
 
+// ✅ ADDED: better global error shape (still 500, but includes message)
+// Express error middleware must have 4 args and be after routes. [web:123]
 app.use((err, req, res, next) => {
   console.error('Global error:', err);
-  res.status(500).json({ error: 'Something went wrong!' });
+  res.status(500).json({
+    error: 'Something went wrong!',
+    message: err?.message
+  });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 CMRIT Backend running on port ${PORT}`);
   console.log('✅ CORS for https://cmr-it-ihpn.onrender.com');
+  console.log('✅ Chatbot endpoint mounted at /api/chatbot/chat'); // ✅ ADDED
 });
