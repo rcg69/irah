@@ -56,7 +56,10 @@ if (!fs.existsSync(examUploadsDir)) {
 const storage = multer.diskStorage({
   destination: './uploads/',
   filename: (req, file, cb) =>
-    cb(null, Date.now() + '-' + Math.round(Math.random() * 1e9) + path.extname(file.originalname))
+    cb(
+      null,
+      Date.now() + '-' + Math.round(Math.random() * 1e9) + path.extname(file.originalname)
+    )
 });
 const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -199,12 +202,21 @@ app.post('/api/teacher/login', loginLimiter, async (req, res) => {
   }
 });
 
-// Admin Login (hardcoded demo) - POST /api/admin/login
+// Admin Login (from .env) - POST /api/admin/login
 app.post('/api/admin/login', loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (email === 'ramgoud696@gmail.com' && password === 'ram@6969') {
+    const adminEmail = process.env.ADMIN_EMAIL;
+    const adminPassword = process.env.ADMIN_PASSWORD;
+
+    // Fail closed if not configured
+    if (!adminEmail || !adminPassword) {
+      console.error('❌ ADMIN_EMAIL / ADMIN_PASSWORD missing in environment variables.');
+      return res.status(500).json({ message: 'Admin credentials not configured on server' });
+    }
+
+    if (email === adminEmail && password === adminPassword) {
       return res.json({ email, name: 'Admin', role: 'admin' });
     }
     return res.status(401).json({ message: 'Admin login failed' });
@@ -330,7 +342,7 @@ app.post('/api/student/profile-image', upload.single('image'), async (req, res) 
 app.use('/uploads', express.static('uploads'));
 
 // Serve dedicated exam uploads folder (ADDED)
-// Using absolute path is safer than relative when serving static files. [web:1]
+// Using absolute path is safer than relative when serving static files.
 app.use("/exam_uploads", express.static(path.join(__dirname, "exam_uploads")));
 
 // ---------- TEACHER DASHBOARD ROUTES ----------
@@ -524,7 +536,7 @@ app.post('/api/setup-test-data', async (req, res) => {
 
     res.json({
       message: 'Test data created',
-      studentLogin: 'student@cmrit.ac.in / password123'
+      studentLogin: "student@cmrit.ac.in / password123"
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -533,12 +545,12 @@ app.post('/api/setup-test-data', async (req, res) => {
 
 // ---------- FALLBACKS & SERVER START ----------
 
-// 404 fallback (keep after all routes/mounts). [web:2]
+// 404 fallback (keep after all routes/mounts).
 app.use('*', (req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
-// Global error handler (keep last). [web:2]
+// Global error handler (keep last).
 app.use((err, req, res, next) => {
   console.error('Global error:', err);
   res.status(500).json({ error: 'Something went wrong!' });
