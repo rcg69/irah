@@ -1,4 +1,5 @@
 // exampaper.js (NEW) - Exam Papers + Marks module for IRAH/CMRIT portal
+
 const express = require("express");
 const mongoose = require("mongoose");
 const multer = require("multer");
@@ -8,10 +9,9 @@ const fs = require("fs");
 const router = express.Router();
 
 /* ---------------------------
-   1) Upload folder (separate)
+1) Upload folder (separate)
 ---------------------------- */
 const EXAM_UPLOAD_DIR = path.join(__dirname, "exam_uploads");
-
 if (!fs.existsSync(EXAM_UPLOAD_DIR)) {
   fs.mkdirSync(EXAM_UPLOAD_DIR, { recursive: true });
 }
@@ -30,24 +30,27 @@ const examUpload = multer({
 });
 
 /* ---------------------------
-   2) Exam schema/model
-   One doc = one "exam folder"
+2) Exam schema/model
+One doc = one "exam folder"
 ---------------------------- */
+const examScriptSchema = new mongoose.Schema(
+  {
+    fileName: String, // stored filename on server
+    originalName: String,
+    mimeType: String,
+    size: Number,
+    url: String, // convenience for frontend
+    uploadedAt: { type: Date, default: Date.now },
+  },
+  { _id: true }
+);
+
 const examSubjectSchema = new mongoose.Schema(
   {
     subjectName: { type: String, required: true },
     marksObtained: { type: Number, required: true },
     maxMarks: { type: Number, default: 100 },
-    scripts: [
-      {
-        fileName: String, // stored filename on server
-        originalName: String,
-        mimeType: String,
-        size: Number,
-        url: String, // convenience for frontend
-        uploadedAt: { type: Date, default: Date.now },
-      },
-    ],
+    scripts: [examScriptSchema],
   },
   { _id: true }
 );
@@ -57,12 +60,10 @@ const examFolderSchema = new mongoose.Schema(
     studentRollNo: { type: String, required: true, index: true },
     studentEmail: { type: String }, // optional (for display)
     studentName: { type: String }, // optional (for display)
-
     mentorTeacherEmail: { type: String, required: true, index: true },
     examName: { type: String, required: true, index: true },
-
     subjects: [examSubjectSchema],
-    published: { type: Boolean, default: true }, // keep simple: visible immediately
+    published: { type: Boolean, default: true }, // visible immediately
   },
   { timestamps: true }
 );
@@ -72,7 +73,7 @@ const ExamFolder =
   mongoose.models.ExamFolder || mongoose.model("ExamFolder", examFolderSchema);
 
 /* ---------------------------
-   Helpers
+Helpers
 ---------------------------- */
 const normalize = (s) => String(s || "").trim();
 
@@ -80,7 +81,7 @@ const filePublicUrl = (req, fileName) =>
   `${req.protocol}://${req.get("host")}/exam_uploads/${fileName}`;
 
 /* ---------------------------
-   3) Teacher APIs
+3) Teacher APIs
 ---------------------------- */
 
 // Create/Get exam folder (teacher)
@@ -89,7 +90,9 @@ router.post("/teacher/create-folder", async (req, res) => {
     const { studentRollNo, mentorTeacherEmail, examName, studentEmail, studentName } = req.body;
 
     if (!normalize(studentRollNo) || !normalize(mentorTeacherEmail) || !normalize(examName)) {
-      return res.status(400).json({ message: "studentRollNo, mentorTeacherEmail, examName are required" });
+      return res
+        .status(400)
+        .json({ message: "studentRollNo, mentorTeacherEmail, examName are required" });
     }
 
     const rollNo = normalize(studentRollNo);
@@ -200,8 +203,27 @@ router.post(
   }
 );
 
+// GET all exam folders uploaded by this teacher (mentor uploads only)
+router.get("/teacher/folders", async (req, res) => {
+  try {
+    const { mentorTeacherEmail } = req.query;
+    if (!mentorTeacherEmail) {
+      return res.status(400).json({ message: "mentorTeacherEmail is required" });
+    }
+
+    const folders = await ExamFolder.find({
+      mentorTeacherEmail: String(mentorTeacherEmail).toLowerCase().trim(),
+    }).sort({ createdAt: -1 });
+
+    return res.json({ folders });
+  } catch (err) {
+    console.error("teacher/folders error:", err);
+    return res.status(500).json({ message: err?.message || "Server error" });
+  }
+});
+
 /* ---------------------------
-   4) Student APIs
+4) Student APIs
 ---------------------------- */
 
 // List exam folders by rollNo (student)
@@ -210,8 +232,9 @@ router.get("/student/folders", async (req, res) => {
     const { rollNo } = req.query;
     if (!normalize(rollNo)) return res.status(400).json({ message: "rollNo is required" });
 
-    const folders = await ExamFolder.find({ studentRollNo: normalize(rollNo) })
-      .sort({ createdAt: -1 });
+    const folders = await ExamFolder.find({ studentRollNo: normalize(rollNo) }).sort({
+      createdAt: -1,
+    });
 
     return res.json({ folders });
   } catch (err) {
@@ -241,21 +264,48 @@ router.get("/student/folders/:folderId", async (req, res) => {
     return res.status(500).json({ message: err?.message || "Server error" });
   }
 });
-// GET all exam folders uploaded by this teacher (mentor uploads only)
-router.get("/teacher/folders", async (req, res) => {
+
+/* ---------------------------
+5) NEW: Summary endpoint for chatbot
+Student enters rollNo + subjectName => returns AI summary
+---------------------------- */
+router.post("/student/subject-summary", async (req, res) => {
   try {
-    const { mentorTeacherEmail } = req.query;
-    if (!mentorTeacherEmail) {
-      return res.status(400).json({ message: "mentorTeacherEmail is required" });
+    const { rollNo, subjectName, examName } = req.body;
+
+    if (!normalize(rollNo) || !normalize(subjectName)) {
+      return res.status(400).json({ message: "rollNo and subjectName are required" });
     }
 
-    const folders = await ExamFolder.find({
-      mentorTeacherEmail: String(mentorTeacherEmail).toLowerCase().trim(),
-    }).sort({ createdAt: -1 });
+    const roll = normalize(rollNo);
+    const sub = normalize(subjectName).toLowerCase();
 
-    return res.json({ folders });
+    // Latest folder (optionally filter by examName if provided)
+    const folderQuery = { studentRollNo: roll };
+    if (normalize(examName)) folderQuery.examName = normalize(examName);
+
+    const folder = await ExamFolder.findOne(folderQuery).sort({ createdAt: -1 });
+    if (!folder) return res.status(404).json({ message: "No exam folder found for this roll number" });
+
+    // Pick matching subject
+    const subject =
+      folder.subjects.find((s) => String(s.subjectName).toLowerCase() === sub) || null;
+
+    if (!subject) {
+      return res.status(404).json({ message: "Subject not found in latest exam folder" });
+    }
+
+    // If scripts exist, provide quick summary using stored marks + filenames (AI analysis of PDFs is added in chatbot route)
+    return res.json({
+      rollNo: folder.studentRollNo,
+      examName: folder.examName,
+      subjectName: subject.subjectName,
+      marksObtained: subject.marksObtained,
+      maxMarks: subject.maxMarks,
+      scripts: subject.scripts || [],
+    });
   } catch (err) {
-    console.error("teacher/folders error:", err);
+    console.error("subject-summary error:", err);
     return res.status(500).json({ message: err?.message || "Server error" });
   }
 });
