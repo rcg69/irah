@@ -4,6 +4,13 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const router = express.Router();
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+// ---- fetch fallback (Node < 18) ----
+let fetchFn = global.fetch;
+if (!fetchFn) {
+  // npm i node-fetch@2
+  fetchFn = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
+}
+
 // ✅ Extract retryDelay from Gemini error details (e.g., "4s", "32s")
 function parseRetryDelayMs(err) {
   try {
@@ -55,24 +62,45 @@ function handleGeminiError(res, err) {
   });
 }
 
-/**
- * Build base URL for internal calls (Render/localhost safe).
- * Uses current request host so it works on deployed domain too.
- */
+// Build base URL for internal calls (Render/localhost safe).
 function getBaseUrl(req) {
   const proto = req.headers["x-forwarded-proto"] || req.protocol;
   return `${proto}://${req.get("host")}`;
 }
 
-/**
- * Find a subject in latest folder by subject name (case-insensitive)
- */
 function findSubjectInFolder(folder, subjectName) {
   const target = String(subjectName || "").trim().toLowerCase();
   if (!target) return null;
-
   const subjects = Array.isArray(folder?.subjects) ? folder.subjects : [];
-  return subjects.find((s) => String(s?.subjectName || "").trim().toLowerCase() === target) || null;
+  return (
+    subjects.find((s) => String(s?.subjectName || "").trim().toLowerCase() === target) || null
+  );
+}
+
+// Parse roll + subject from a free-form message
+function extractRollAndSubject(message) {
+  const text = String(message || "").trim();
+
+  // roll patterns like 21CMR001 / 21CS001 etc
+  const rollMatch = text.match(/\b\d{2}[A-Za-z]{2,6}\d{3,4}\b/);
+  const rollNo = rollMatch ? rollMatch[0].toUpperCase() : null;
+
+  // subject: try "subject DSA" or "exam DSA" or just "DSA"
+  let subjectName = null;
+
+  const subjectMatch =
+    text.match(/\bsubject\s*[:\-]?\s*([A-Za-z& ]{2,25})\b/i) ||
+    text.match(/\bexam\s*[:\-]?\s*([A-Za-z& ]{2,25})\b/i);
+
+  if (subjectMatch?.[1]) subjectName = subjectMatch[1].trim();
+
+  // fallback: common short all-caps token e.g., DSA, DBMS, OS, CN
+  if (!subjectName) {
+    const token = text.match(/\b(DSA|DBMS|OS|CN|COA|OOPS|AI|ML|SE)\b/i);
+    if (token?.[1]) subjectName = token[1].toUpperCase();
+  }
+
+  return { rollNo, subjectName };
 }
 
 /* ---------------------------
@@ -84,9 +112,7 @@ router.post("/chat", async (req, res) => {
     if (!message?.trim()) return res.status(400).json({ message: "Message required" });
 
     if (!process.env.GEMINI_API_KEY) {
-      return res
-        .status(500)
-        .json({ message: "Server misconfigured: GEMINI_API_KEY missing" });
+      return res.status(500).json({ message: "Server misconfigured: GEMINI_API_KEY missing" });
     }
 
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
@@ -104,17 +130,30 @@ router.post("/chat", async (req, res) => {
 });
 
 /* ---------------------------
-2) NEW: Exam summary + improvement from existing uploads
-Input: { rollNo, subjectName, examName? }
-Output: short summary for chatbot
+2) Exam summary route (works with existing uploads)
+Accepts:
+- { message: "review my paper roll 21CMR001 subject DSA" }
+OR
+- { rollNo: "...", subjectName: "...", examName?: "Mid-1" }
 ---------------------------- */
 router.post("/exam-summary", async (req, res) => {
   try {
-    const { rollNo, subjectName, examName } = req.body;
+    let { rollNo, subjectName, examName, message } = req.body;
+
+    // Allow generic natural language
+    if ((!rollNo || !subjectName) && message) {
+      const extracted = extractRollAndSubject(message);
+      rollNo = rollNo || extracted.rollNo;
+      subjectName = subjectName || extracted.subjectName;
+    }
 
     if (!rollNo || !subjectName) {
-      return res.status(400).json({ message: "rollNo and subjectName are required" });
+      return res.status(400).json({
+        message:
+          'Provide rollNo + subjectName, or a message like: "Give me a review of my paper roll 21CMR001 subject DSA".',
+      });
     }
+
     if (!process.env.GEMINI_API_KEY) {
       return res.status(500).json({ message: "Server misconfigured: GEMINI_API_KEY missing" });
     }
@@ -125,7 +164,7 @@ router.post("/exam-summary", async (req, res) => {
       String(rollNo).trim()
     )}`;
 
-    const foldersRes = await fetch(foldersUrl);
+    const foldersRes = await fetchFn(foldersUrl);
     const foldersData = await foldersRes.json().catch(() => ({}));
 
     if (!foldersRes.ok) {
@@ -139,17 +178,20 @@ router.post("/exam-summary", async (req, res) => {
       return res.status(404).json({ message: "No exam folders found for this roll number" });
     }
 
-    // 2) Choose folder: if examName given => latest matching; else latest overall (folders are already sorted by backend)
-    let folder =
-      examName
-        ? folders.find((f) => String(f?.examName || "").trim().toLowerCase() === String(examName).trim().toLowerCase())
-        : folders[0];
+    // 2) Choose folder
+    let folder = examName
+      ? folders.find(
+          (f) =>
+            String(f?.examName || "").trim().toLowerCase() ===
+            String(examName).trim().toLowerCase()
+        )
+      : folders[0];
 
     if (!folder) {
       return res.status(404).json({ message: "Exam not found for given examName" });
     }
 
-    // 3) Find subject inside that folder
+    // 3) Find subject
     const subject = findSubjectInFolder(folder, subjectName);
     if (!subject) {
       return res.status(404).json({
@@ -163,28 +205,33 @@ router.post("/exam-summary", async (req, res) => {
     const scriptLinks = scripts
       .map((s) => s?.url)
       .filter(Boolean)
-      .slice(0, 5); // keep prompt small
+      .slice(0, 5);
 
-    // 4) Ask Gemini for summary + improvement (without pretending exact per-question mark split)
+    // 4) Gemini prompt (anti-refusal, concise, structured headings)
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-    const prompt = `
-You are an exam feedback assistant for CMRIT.
-Given: student roll number, subject, marks, and answer-script file links (teacher-uploaded scans/PDFs).
+    const prompt = `You are CMRIT Exam Review Bot.
+You DO have access to the student's exam data because it is provided below by the system from the CMRIT portal database.
+
+Data from portal DB (trusted):
+Roll No: ${String(rollNo).trim()}
+Subject: ${String(subject?.subjectName || subjectName).trim()}
+Exam Name: ${folder.examName}
+Marks: ${marksObtained}/${maxMarks}
+Answer script file links (teacher-uploaded): ${scriptLinks.length ? scriptLinks.join(", ") : "No script files uploaded."}
 
 Task:
-- Write a short summary of performance (3-5 lines).
-- List 3 strengths (bullets).
-- List 3 scope-of-improvement points (bullets).
-- If the script links are provided, infer likely reasons for losing marks, but do NOT claim exact question-wise marks unless clearly visible.
-- Keep it concise and student-friendly.
+- Give a short review of the student’s performance (3–5 lines).
+- Mention where marks were likely lost (3 bullet points) based on the scripts and marks.
+- Give scope of improvement (3 bullet points) with actionable tips.
+Rules:
+- Do not mention privacy/confidentiality or say “I don’t have access”.
+- If scripts are unclear, say “Script scan unclear” and base feedback on marks + common DSA expectations.
 
-Input:
-Roll No: ${String(rollNo).trim()}
-Exam: ${folder.examName}
-Subject: ${subject.subjectName}
-Marks: ${marksObtained}/${maxMarks}
-Answer script links: ${scriptLinks.length ? scriptLinks.join(", ") : "No script files uploaded."}
+Output format (plain text only):
+Summary:
+Marks lost:
+Improvements:
 `;
 
     const result = await model.generateContent(prompt);
@@ -196,7 +243,7 @@ Answer script links: ${scriptLinks.length ? scriptLinks.join(", ") : "No script 
       meta: {
         rollNo: String(rollNo).trim(),
         examName: folder.examName,
-        subjectName: subject.subjectName,
+        subjectName: subject?.subjectName || subjectName,
         marksObtained,
         maxMarks,
         scriptCount: scripts.length,
