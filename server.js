@@ -13,6 +13,7 @@ const xlsx = require('xlsx');
 const bcrypt = require('bcryptjs');
 const path = require('path');
 const fs = require('fs');
+const clubRoutes = require('./club');
 
 const chatbotRoutes = require('./chatbot');
 const examPaperRoutes = require("./exampaper");
@@ -40,6 +41,7 @@ app.use('/api/chatbot', chatbotRoutes);
 // Mount exam paper routes (ADDED RIGHT AFTER CHATBOT)
 console.log("Mounting exam paper routes at /api/exams");
 app.use("/api/exams", examPaperRoutes);
+app.use('/api/clubs', clubRoutes);
 
 // Create uploads folder if missing
 if (!fs.existsSync('./uploads')) {
