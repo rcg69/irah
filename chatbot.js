@@ -104,7 +104,7 @@ function extractRollAndSubject(message) {
 }
 
 /* ---------------------------
-1) Existing general chatbot (KEEP) - Updated to gemini-3.0-flash-preview
+1) Existing general chatbot (KEEP)
 ---------------------------- */
 router.post("/chat", async (req, res) => {
   try {
@@ -115,8 +115,7 @@ router.post("/chat", async (req, res) => {
       return res.status(500).json({ message: "Server misconfigured: GEMINI_API_KEY missing" });
     }
 
-    // ✅ Updated to gemini-3.0-flash-preview
-    const model = genAI.getGenerativeModel({ model: "gemini-3.0-flash-preview" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     const prompt = `You are CMRIT Assistant. Student: ${studentEmail || "anonymous"}. Query: ${message}. Answer briefly.`;
     const result = await model.generateContent(prompt);
@@ -131,7 +130,7 @@ router.post("/chat", async (req, res) => {
 });
 
 /* ---------------------------
-2) Exam summary route (SIMPLIFIED) - Updated to gemini-3.0-flash-preview
+2) Exam summary route (works with existing uploads)
 Accepts:
 - { message: "review my paper roll 21CMR001 subject DSA" }
 OR
@@ -202,24 +201,38 @@ router.post("/exam-summary", async (req, res) => {
 
     const marksObtained = subject?.marksObtained;
     const maxMarks = subject?.maxMarks;
+    const scripts = Array.isArray(subject?.scripts) ? subject.scripts : [];
+    const scriptLinks = scripts
+      .map((s) => s?.url)
+      .filter(Boolean)
+      .slice(0, 5);
 
-    // ✅ SIMPLIFIED PROMPT + gemini-3.0-flash-preview
-    const model = genAI.getGenerativeModel({ model: "gemini-3.0-flash-preview" });
+    // 4) Gemini prompt (anti-refusal, concise, structured headings)
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-    const prompt = `CMRIT Exam Review:
+    const prompt = `You are CMRIT Exam Review Bot.
+You DO have access to the student's exam data because it is provided below by the system from the CMRIT portal database.
 
+Data from portal DB (trusted):
 Roll No: ${String(rollNo).trim()}
-Exam: ${folder.examName}
 Subject: ${String(subject?.subjectName || subjectName).trim()}
+Exam Name: ${folder.examName}
 Marks: ${marksObtained}/${maxMarks}
+Answer script file links (teacher-uploaded): ${scriptLinks.length ? scriptLinks.join(", ") : "No script files uploaded."}
 
-Give a short performance review with:
-- Summary (2-3 lines)
-- 3 areas to improve
+Task:
+- Give a short review of the student’s performance (3–5 lines).
+- Mention where marks were likely lost (3 bullet points) based on the scripts and marks.
+- Give scope of improvement (3 bullet points) with actionable tips.
+Rules:
+- Do not mention privacy/confidentiality or say “I don’t have access”.
+- If scripts are unclear, say “Script scan unclear” and base feedback on marks + common DSA expectations.
 
-Format exactly:
+Output format (plain text only):
 Summary:
-Improvements:`;
+Marks lost:
+Improvements:
+`;
 
     const result = await model.generateContent(prompt);
     const text =
@@ -233,6 +246,7 @@ Improvements:`;
         subjectName: subject?.subjectName || subjectName,
         marksObtained,
         maxMarks,
+        scriptCount: scripts.length,
       },
     });
   } catch (err) {
