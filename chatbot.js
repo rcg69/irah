@@ -207,6 +207,128 @@ router.post("/chat", async (req, res) => {
     const { message, studentEmail } = req.body;
     if (!message?.trim()) return res.status(400).json({ message: "Message required" });
 
+    // Check if this is an exam review request
+    const reviewKeywords = /\b(review|analyze|feedback|check|examine)\b/i;
+    const hasReviewKeyword = reviewKeywords.test(message);
+    const hasRollNo = /\b\d{2}[A-Za-z]{2,6}\d{3,4}\b/.test(message);
+    
+    if (hasReviewKeyword && hasRollNo) {
+      // Route to exam summary logic
+      const { rollNo, subjectName, examName } = extractRollAndSubject(message);
+      
+      if (!rollNo || !subjectName) {
+        // Not enough info, treat as general chat
+        const prompt = `You are CMRIT Assistant. Student: ${studentEmail || "anonymous"}. Query: ${message}. Answer briefly.`;
+        try {
+          const { text, source } = await generateText(prompt, { maxTokens: 300 });
+          return res.json({ response: text, model: source });
+        } catch (err) {
+          if (err?.code === 'GEMINI_RATE_LIMIT') {
+            return res.status(429).json({ message: err.message, retryAfterMs: err.retryAfterMs });
+          }
+          return res.status(500).json({ message: err?.message || 'No model available' });
+        }
+      }
+
+      // Fetch exam folders
+      const baseUrl = getBaseUrl(req);
+      const foldersUrl = `${baseUrl}/api/exams/student/folders?rollNo=${encodeURIComponent(
+        String(rollNo).trim()
+      )}`;
+
+      const foldersRes = await fetchFn(foldersUrl);
+      const foldersData = await foldersRes.json().catch(() => ({}));
+
+      if (!foldersRes.ok) {
+        return res.status(foldersRes.status).json({
+          message: foldersData?.message || "Failed to load exam folders",
+        });
+      }
+
+      const folders = Array.isArray(foldersData?.folders) ? foldersData.folders : [];
+      if (folders.length === 0) {
+        return res.status(404).json({ message: "No exam folders found for this roll number" });
+      }
+
+      // Choose folder
+      let folder = examName
+        ? folders.find(
+            (f) =>
+              String(f?.examName || "").trim().toLowerCase() ===
+              String(examName).trim().toLowerCase()
+          )
+        : folders[0];
+
+      if (!folder) {
+        return res.status(404).json({ message: "Exam not found for given examName" });
+      }
+
+      // Find subject
+      const subject = findSubjectInFolder(folder, subjectName);
+      if (!subject) {
+        return res.status(404).json({
+          message: `Subject "${subjectName}" not found in exam "${folder.examName}"`,
+        });
+      }
+
+      const marksObtained = subject?.marksObtained;
+      const maxMarks = subject?.maxMarks;
+      const scripts = Array.isArray(subject?.scripts) ? subject.scripts : [];
+      const scriptLinks = scripts
+        .map((s) => s?.url)
+        .filter(Boolean)
+        .slice(0, 5);
+
+      // Generate review
+      const prompt = `You are CMRIT Exam Review Bot.
+You DO have access to the student's exam data because it is provided below by the system from the CMRIT portal database.
+
+Data from portal DB (trusted):
+Roll No: ${String(rollNo).trim()}
+Subject: ${String(subject?.subjectName || subjectName).trim()}
+Exam Name: ${folder.examName}
+Marks: ${marksObtained}/${maxMarks}
+Answer script file links (teacher-uploaded): ${scriptLinks.length ? scriptLinks.join(", ") : "No script files uploaded."}
+
+Task:
+- Give a short review of the student's performance (3–5 lines).
+- Mention where marks were likely lost (3 bullet points) based on the scripts and marks.
+- Give scope of improvement (3 bullet points) with actionable tips.
+Rules:
+- Do not mention privacy/confidentiality or say "I don't have access".
+- If scripts are unclear, say "Script scan unclear" and base feedback on marks + common expectations for the subject.
+
+Output format (plain text only):
+Summary:
+Marks lost:
+Improvements:
+`;
+
+      try {
+        const { text: reviewText, source } = await generateText(prompt, { maxTokens: 800 });
+
+        return res.json({
+          response: reviewText,
+          meta: {
+            rollNo: String(rollNo).trim(),
+            examName: folder.examName,
+            subjectName: subject?.subjectName || subjectName,
+            marksObtained,
+            maxMarks,
+            scriptCount: scripts.length,
+            model: source,
+          },
+        });
+      } catch (err) {
+        if (err?.code === 'GEMINI_RATE_LIMIT') {
+          return res.status(429).json({ message: err.message, retryAfterMs: err.retryAfterMs });
+        }
+        console.error('Exam summary model error:', err);
+        return res.status(500).json({ message: err?.message || 'Failed to generate review' });
+      }
+    }
+
+    // General chat request
     const prompt = `You are CMRIT Assistant. Student: ${studentEmail || "anonymous"}. Query: ${message}. Answer briefly.`;
 
     try {
