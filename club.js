@@ -116,7 +116,12 @@ router.get('/:clubId', async (req, res) => {
  */
 router.post('/request-join', async (req, res) => {
   try {
-    const { clubId, studentEmail } = req.body;
+    const { clubId, studentEmail, studentName } = req.body;
+
+    // Basic validation
+    if (!clubId || !studentEmail) {
+      return res.status(400).json({ message: 'clubId and studentEmail are required' });
+    }
 
     const club = await Club.findById(clubId);
     if (!club) return res.status(404).json({ message: 'Club not found' });
@@ -124,12 +129,14 @@ router.post('/request-join', async (req, res) => {
     if (club.members.includes(studentEmail))
       return res.status(400).json({ message: 'Already a member' });
 
-    if (!club.pendingRequests.includes(studentEmail)) {
-      club.pendingRequests.push(studentEmail);
-      await club.save();
-    }
+    if (club.pendingRequests.includes(studentEmail))
+      return res.status(400).json({ message: 'Already requested' });
 
-    res.json({ message: 'Join request sent' });
+    // Add to pending requests
+    club.pendingRequests.push(studentEmail);
+    await club.save();
+
+    res.json({ message: 'Join request received' });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -143,12 +150,24 @@ router.post('/approve-member', async (req, res) => {
   try {
     const { clubId, studentEmail, presidentEmail } = req.body;
 
+    // Basic validation
+    if (!clubId || !studentEmail || !presidentEmail) {
+      return res.status(400).json({ message: 'clubId, studentEmail and presidentEmail are required' });
+    }
+
     const club = await Club.findById(clubId);
     if (!club) return res.status(404).json({ message: 'Club not found' });
 
     if (club.presidentEmail !== presidentEmail)
       return res.status(403).json({ message: 'Only president can approve' });
 
+    if (club.members.includes(studentEmail))
+      return res.status(400).json({ message: 'Already a member' });
+
+    if (!club.pendingRequests.includes(studentEmail))
+      return res.status(400).json({ message: 'No pending request from this student' });
+
+    // Move from pending to members
     club.pendingRequests = club.pendingRequests.filter(e => e !== studentEmail);
     club.members.push(studentEmail);
 
